@@ -1,0 +1,310 @@
+import admin from "firebase-admin";
+
+const serviceAccount = JSON.parse(
+    process.env.FIREBASE_SERVICE_ACCOUNT
+);
+
+admin.initializeApp({
+    credential: admin.credential.cert(serviceAccount)
+});
+
+const db = admin.firestore();
+const messaging = admin.messaging();
+
+const TASK_ICONS = {
+    "Food": "🥣",
+    "Fresh Water": "💧",
+    "Morning Walk": "🚶",
+    "Evening Walk": "🌆",
+    "Medicine": "💊",
+    "Grooming": "🧼"
+};
+
+function getIndiaTime() {
+    const now = new Date();
+
+    const parts = new Intl.DateTimeFormat("en-IN", {
+        timeZone: "Asia/Kolkata",
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+        hour12: false
+    }).formatToParts(now);
+
+    const get = (type) =>
+        parts.find(p => p.type === type)?.value;
+
+    return {
+        date: `${get("year")}-${get("month")}-${get("day")}`,
+        time: `${get("hour")}:${get("minute")}`
+    };
+}
+
+function minutesFromTime(time) {
+    const [hour, minute] = time.split(":").map(Number);
+    return hour * 60 + minute;
+}
+
+async function getFamilyTokens(familyId) {
+    const membersSnap = await db
+        .collection("families")
+        .doc(familyId)
+        .collection("members")
+        .get();
+
+    const tokens = [];
+
+    for (const member of membersSnap.docs) {
+        const userSnap = await db
+            .collection("users")
+            .doc(member.id)
+            .get();
+
+        if (!userSnap.exists) continue;
+
+        const user = userSnap.data();
+
+        if (
+            user.notificationsEnabled === true &&
+            user.fcmToken
+        ) {
+            tokens.push(user.fcmToken);
+        }
+    }
+
+    return [...new Set(tokens)];
+}
+
+async function sendNotification(
+    tokens,
+    title,
+    body,
+    tag
+) {
+    if (!tokens.length) return;
+
+    const message = {
+        tokens,
+
+        notification: {
+            title,
+            body
+        },
+
+        data: {
+            tag: tag
+        },
+
+        webpush: {
+            notification: {
+                title,
+                body,
+                tag
+            }
+        }
+    };
+
+    const response =
+        await messaging.sendEachForMulticast(message);
+
+    console.log(
+        `Notification sent: ${response.successCount} successful`
+    );
+}
+
+async function processPet(
+    familyId,
+    petId,
+    petName
+) {
+    const reminderRef = db
+        .collection("families")
+        .doc(familyId)
+        .collection("pets")
+        .doc(petId)
+        .collection("reminders")
+        .doc("reminders");
+
+    const reminderSnap =
+        await reminderRef.get();
+
+    if (!reminderSnap.exists) return;
+
+    const reminders = reminderSnap.data();
+
+    const today = getIndiaTime();
+    const nowMinutes =
+        minutesFromTime(today.time);
+
+    const tasksRef = db
+        .collection("families")
+        .doc(familyId)
+        .collection("pets")
+        .doc(petId)
+        .collection("days")
+        .doc(today.date)
+        .collection("tasks");
+
+    const tasksSnap = await tasksRef.get();
+
+    const completed = {};
+
+    tasksSnap.forEach(doc => {
+        const data = doc.data();
+
+        if (data.completed === true) {
+            completed[data.taskName] = true;
+        }
+    });
+
+    const tokens =
+        await getFamilyTokens(familyId);
+
+    if (!tokens.length) return;
+
+    for (const [taskName, reminderTime]
+        of Object.entries(reminders)) {
+
+        if (
+            typeof reminderTime !== "string" ||
+            !/^\d{2}:\d{2}$/.test(reminderTime)
+        ) {
+            continue;
+        }
+
+        if (completed[taskName]) {
+            continue;
+        }
+
+        const dueMinutes =
+            minutesFromTime(reminderTime);
+
+        const minutesLate =
+            nowMinutes - dueMinutes;
+
+        let notificationType = "";
+
+        if (
+            minutesLate >= 0 &&
+            minutesLate < 30
+        ) {
+            notificationType = "due";
+        } else if (
+            minutesLate >= 30
+        ) {
+            notificationType = "missed";
+        } else {
+            continue;
+        }
+
+        const stateRef = db
+            .collection("families")
+            .doc(familyId)
+            .collection("pets")
+            .doc(petId)
+            .collection("reminders")
+            .doc("notification-state");
+
+        const stateSnap =
+            await stateRef.get();
+
+        const state =
+            stateSnap.exists
+                ? stateSnap.data()
+                : {};
+
+        const stateKey =
+            `${taskName}_${today.date}_${notificationType}`;
+
+        if (state[stateKey]) {
+            continue;
+        }
+
+        const icon =
+            TASK_ICONS[taskName] || "🐾";
+
+        let title;
+        let body;
+
+        if (notificationType === "due") {
+
+            title =
+                "PetOlife Care Reminder";
+
+            body =
+                `${icon} ${petName}'s ${taskName} is due now.`;
+        } else {
+
+            title =
+                "PetOlife — Care Still Pending";
+
+            body =
+                `${icon} ${petName}'s ${taskName} is still pending. Please take care of your pet.`;
+        }
+
+        await sendNotification(
+            tokens,
+            title,
+            body,
+            `petolife-${petId}-${taskName}-${notificationType}`
+        );
+
+        await stateRef.set(
+            {
+                [stateKey]: true
+            },
+            {
+                merge: true
+            }
+        );
+    }
+}
+
+async function main() {
+
+    console.log("PetOlife reminder server started.");
+
+    const familiesSnap =
+        await db.collection("families").get();
+
+    for (const familyDoc of familiesSnap.docs) {
+
+        const familyId = familyDoc.id;
+
+        const petsSnap =
+            await db
+                .collection("families")
+                .doc(familyId)
+                .collection("pets")
+                .get();
+
+        for (const petDoc of petsSnap.docs) {
+
+            const pet =
+                petDoc.data();
+
+            const petName =
+                pet.name || "Your pet";
+
+            await processPet(
+                familyId,
+                petDoc.id,
+                petName
+            );
+        }
+    }
+
+    console.log("PetOlife reminder check completed.");
+}
+
+main().catch(error => {
+
+    console.error(
+        "Reminder server error:",
+        error
+    );
+
+    process.exit(1);
+});
