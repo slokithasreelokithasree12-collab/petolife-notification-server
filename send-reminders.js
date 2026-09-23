@@ -34,7 +34,7 @@ function getIndiaTime() {
     }).formatToParts(now);
 
     const get = (type) =>
-        parts.find(p => p.type === type)?.value;
+        parts.find((p) => p.type === type)?.value;
 
     return {
         date: `${get("year")}-${get("month")}-${get("day")}`,
@@ -62,7 +62,9 @@ async function getFamilyTokens(familyId) {
             .doc(member.id)
             .get();
 
-        if (!userSnap.exists) continue;
+        if (!userSnap.exists) {
+            continue;
+        }
 
         const user = userSnap.data();
 
@@ -83,14 +85,17 @@ async function sendNotification(
     body,
     tag
 ) {
-    if (!tokens.length) return;
+    if (!tokens.length) {
+        console.log("No notification tokens found.");
+        return;
+    }
 
     const message = {
-        tokens,
+        tokens: tokens,
 
         notification: {
-            title,
-            body
+            title: title,
+            body: body
         },
 
         data: {
@@ -99,9 +104,9 @@ async function sendNotification(
 
         webpush: {
             notification: {
-                title,
-                body,
-                tag
+                title: title,
+                body: body,
+                tag: tag
             }
         }
     };
@@ -110,7 +115,7 @@ async function sendNotification(
         await messaging.sendEachForMulticast(message);
 
     console.log(
-        `Notification sent: ${response.successCount} successful`
+        `Notification sent: ${response.successCount} successful, ${response.failureCount} failed`
     );
 }
 
@@ -119,6 +124,10 @@ async function processPet(
     petId,
     petName
 ) {
+    console.log(
+        `Processing pet: ${petName}`
+    );
+
     const reminderRef = db
         .collection("families")
         .doc(familyId)
@@ -130,13 +139,23 @@ async function processPet(
     const reminderSnap =
         await reminderRef.get();
 
-    if (!reminderSnap.exists) return;
+    if (!reminderSnap.exists) {
+        console.log(
+            `No reminder settings found for ${petName}`
+        );
+        return;
+    }
 
     const reminders = reminderSnap.data();
 
     const today = getIndiaTime();
+
     const nowMinutes =
         minutesFromTime(today.time);
+
+    console.log(
+        `India time: ${today.date} ${today.time}`
+    );
 
     const tasksRef = db
         .collection("families")
@@ -147,12 +166,13 @@ async function processPet(
         .doc(today.date)
         .collection("tasks");
 
-    const tasksSnap = await tasksRef.get();
+    const tasksSnap =
+        await tasksRef.get();
 
     const completed = {};
 
-    tasksSnap.forEach(doc => {
-        const data = doc.data();
+    tasksSnap.forEach((taskDoc) => {
+        const data = taskDoc.data();
 
         if (data.completed === true) {
             completed[data.taskName] = true;
@@ -162,11 +182,17 @@ async function processPet(
     const tokens =
         await getFamilyTokens(familyId);
 
-    if (!tokens.length) return;
+    if (!tokens.length) {
+        console.log(
+            `No enabled notification tokens for family ${familyId}`
+        );
+        return;
+    }
 
-    for (const [taskName, reminderTime]
-        of Object.entries(reminders)) {
-
+    for (
+        const [taskName, reminderTime]
+        of Object.entries(reminders)
+    ) {
         if (
             typeof reminderTime !== "string" ||
             !/^\d{2}:\d{2}$/.test(reminderTime)
@@ -175,6 +201,9 @@ async function processPet(
         }
 
         if (completed[taskName]) {
+            console.log(
+                `${taskName}: already completed`
+            );
             continue;
         }
 
@@ -219,6 +248,9 @@ async function processPet(
             `${taskName}_${today.date}_${notificationType}`;
 
         if (state[stateKey]) {
+            console.log(
+                `${taskName}: ${notificationType} notification already sent`
+            );
             continue;
         }
 
@@ -229,20 +261,22 @@ async function processPet(
         let body;
 
         if (notificationType === "due") {
-
             title =
                 "PetOlife Care Reminder";
 
             body =
                 `${icon} ${petName}'s ${taskName} is due now.`;
         } else {
-
             title =
                 "PetOlife — Care Still Pending";
 
             body =
                 `${icon} ${petName}'s ${taskName} is still pending. Please take care of your pet.`;
         }
+
+        console.log(
+            `Sending ${notificationType} notification for ${taskName}`
+        );
 
         await sendNotification(
             tokens,
@@ -263,8 +297,9 @@ async function processPet(
 }
 
 async function main() {
-
-    console.log("PetOlife reminder server started.");
+    console.log(
+        "PetOlife reminder server started."
+    );
 
     const reminderDocs =
         await db
@@ -278,7 +313,6 @@ async function main() {
     const processedPets = new Set();
 
     for (const reminderDoc of reminderDocs.docs) {
-
         if (reminderDoc.id !== "reminders") {
             continue;
         }
@@ -286,7 +320,14 @@ async function main() {
         const pathParts =
             reminderDoc.ref.path.split("/");
 
+        console.log(
+            `Found reminder document: ${reminderDoc.ref.path}`
+        );
+
         if (pathParts.length !== 6) {
+            console.log(
+                `Skipping unexpected path: ${reminderDoc.ref.path}`
+            );
             continue;
         }
 
@@ -339,6 +380,7 @@ async function main() {
     );
 }
 
+main().catch((error) => {
     console.error(
         "Reminder server error:",
         error
