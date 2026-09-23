@@ -266,40 +266,78 @@ async function main() {
 
     console.log("PetOlife reminder server started.");
 
-    const familiesSnap =
-        await db.collection("families").get();
+    const reminderDocs =
+        await db
+            .collectionGroup("reminders")
+            .get();
 
-    for (const familyDoc of familiesSnap.docs) {
+    console.log(
+        `Found ${reminderDocs.size} reminder documents.`
+    );
 
-        const familyId = familyDoc.id;
+    const processedPets = new Set();
 
-        const petsSnap =
+    for (const reminderDoc of reminderDocs.docs) {
+
+        if (reminderDoc.id !== "reminders") {
+            continue;
+        }
+
+        const pathParts =
+            reminderDoc.ref.path.split("/");
+
+        if (pathParts.length !== 6) {
+            continue;
+        }
+
+        const familyId = pathParts[1];
+        const petId = pathParts[3];
+
+        const petKey =
+            `${familyId}/${petId}`;
+
+        if (processedPets.has(petKey)) {
+            continue;
+        }
+
+        processedPets.add(petKey);
+
+        const petSnap =
             await db
                 .collection("families")
                 .doc(familyId)
                 .collection("pets")
+                .doc(petId)
                 .get();
 
-        for (const petDoc of petsSnap.docs) {
-
-            const pet =
-                petDoc.data();
-
-            const petName =
-                pet.name || "Your pet";
-
-            await processPet(
-                familyId,
-                petDoc.id,
-                petName
+        if (!petSnap.exists) {
+            console.log(
+                `Pet not found: ${petKey}`
             );
+            continue;
         }
+
+        const pet =
+            petSnap.data();
+
+        const petName =
+            pet.name || "Your pet";
+
+        console.log(
+            `Checking reminders for ${petName}`
+        );
+
+        await processPet(
+            familyId,
+            petId,
+            petName
+        );
     }
 
-    console.log("PetOlife reminder check completed.");
+    console.log(
+        "PetOlife reminder check completed."
+    );
 }
-
-main().catch(error => {
 
     console.error(
         "Reminder server error:",
