@@ -1,0 +1,29 @@
+name: PetOlife Care Reminders
+
+on:
+  schedule:
+    - cron: "7,12,17,22,27,32,37,42,47,52,57 * * * *"
+      timezone: "Asia/Kolkata"
+  workflow_dispatch:
+
+jobs:
+  send-reminders:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Send PetOlife reminders
+        env:
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+        run: npm start
