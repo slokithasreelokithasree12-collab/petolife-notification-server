@@ -20,6 +20,22 @@ const TASK_ICONS = {
     "Grooming": "🧼"
 };
 
+/* =========================
+   DEFAULT REMINDER TIMES
+========================= */
+
+const DEFAULT_REMINDER_TIMES = {
+    "Food": "08:00",
+    "Fresh Water": "09:00",
+    "Morning Walk": "07:30",
+    "Evening Walk": "17:00",
+    "Medicine": "19:00"
+};
+
+/* =========================
+   INDIA TIME
+========================= */
+
 function getIndiaTime() {
     const now = new Date();
 
@@ -46,6 +62,10 @@ function minutesFromTime(time) {
     const [hour, minute] = time.split(":").map(Number);
     return hour * 60 + minute;
 }
+
+/* =========================
+   FAMILY NOTIFICATION TOKENS
+========================= */
 
 async function getFamilyTokens(familyId) {
     const membersSnap = await db
@@ -78,6 +98,10 @@ async function getFamilyTokens(familyId) {
 
     return [...new Set(tokens)];
 }
+
+/* =========================
+   SEND NOTIFICATION
+========================= */
 
 async function sendNotification(
     tokens,
@@ -119,6 +143,10 @@ async function sendNotification(
     );
 }
 
+/* =========================
+   PROCESS ONE PET
+========================= */
+
 async function processPet(
     familyId,
     petId,
@@ -139,14 +167,10 @@ async function processPet(
     const reminderSnap =
         await reminderRef.get();
 
-    if (!reminderSnap.exists) {
-        console.log(
-            `No reminder settings found for ${petName}`
-        );
-        return;
-    }
-
-    const reminders = reminderSnap.data();
+    const reminders =
+        reminderSnap.exists
+            ? reminderSnap.data()
+            : {};
 
     const today = getIndiaTime();
 
@@ -156,6 +180,10 @@ async function processPet(
     console.log(
         `India time: ${today.date} ${today.time}`
     );
+
+    /* =========================
+       TODAY'S COMPLETED TASKS
+    ========================= */
 
     const tasksRef = db
         .collection("families")
@@ -179,6 +207,10 @@ async function processPet(
         }
     });
 
+    /* =========================
+       FAMILY TOKENS
+    ========================= */
+
     const tokens =
         await getFamilyTokens(familyId);
 
@@ -189,16 +221,35 @@ async function processPet(
         return;
     }
 
-    for (
-        const [taskName, reminderTime]
-        of Object.entries(reminders)
-    ) {
+    /* =========================
+       CHECK DEFAULT + CUSTOM TIMES
+    ========================= */
+
+    const taskNames = Object.keys(
+        DEFAULT_REMINDER_TIMES
+    );
+
+    for (const taskName of taskNames) {
+
+        /*
+         * If user has saved a custom reminder,
+         * use that.
+         *
+         * Otherwise use the default time.
+         */
+
+        let reminderTime =
+            reminders[taskName];
+
         if (
             typeof reminderTime !== "string" ||
             !/^\d{2}:\d{2}$/.test(reminderTime)
         ) {
-            continue;
+            reminderTime =
+                DEFAULT_REMINDER_TIMES[taskName];
         }
+
+        /* Completed = no notification */
 
         if (completed[taskName]) {
             console.log(
@@ -215,18 +266,32 @@ async function processPet(
 
         let notificationType = "";
 
+        /* Due notification */
+
         if (
             minutesLate >= 0 &&
             minutesLate < 30
         ) {
             notificationType = "due";
-        } else if (
+        }
+
+        /* Missed notification after 30 minutes */
+
+        else if (
             minutesLate >= 30
         ) {
             notificationType = "missed";
-        } else {
+        }
+
+        /* Not due yet */
+
+        else {
             continue;
         }
+
+        /* =========================
+           PREVENT DUPLICATES
+        ========================= */
 
         const stateRef = db
             .collection("families")
@@ -254,6 +319,10 @@ async function processPet(
             continue;
         }
 
+        /* =========================
+           NOTIFICATION MESSAGE
+        ========================= */
+
         const icon =
             TASK_ICONS[taskName] || "🐾";
 
@@ -261,12 +330,15 @@ async function processPet(
         let body;
 
         if (notificationType === "due") {
+
             title =
                 "PetOlife Care Reminder";
 
             body =
                 `${icon} ${petName}'s ${taskName} is due now.`;
+
         } else {
+
             title =
                 "PetOlife — Care Still Pending";
 
@@ -285,6 +357,10 @@ async function processPet(
             `petolife-${petId}-${taskName}-${notificationType}`
         );
 
+        /* =========================
+           SAVE NOTIFICATION STATE
+        ========================= */
+
         await stateRef.set(
             {
                 [stateKey]: true
@@ -296,7 +372,12 @@ async function processPet(
     }
 }
 
+/* =========================
+   MAIN
+========================= */
+
 async function main() {
+
     console.log(
         "PetOlife reminder server started."
     );
@@ -313,6 +394,7 @@ async function main() {
     const processedPets = new Set();
 
     for (const reminderDoc of reminderDocs.docs) {
+
         if (reminderDoc.id !== "reminders") {
             continue;
         }
@@ -325,14 +407,19 @@ async function main() {
         );
 
         if (pathParts.length !== 6) {
+
             console.log(
                 `Skipping unexpected path: ${reminderDoc.ref.path}`
             );
+
             continue;
         }
 
-        const familyId = pathParts[1];
-        const petId = pathParts[3];
+        const familyId =
+            pathParts[1];
+
+        const petId =
+            pathParts[3];
 
         const petKey =
             `${familyId}/${petId}`;
@@ -352,9 +439,11 @@ async function main() {
                 .get();
 
         if (!petSnap.exists) {
+
             console.log(
                 `Pet not found: ${petKey}`
             );
+
             continue;
         }
 
@@ -381,6 +470,7 @@ async function main() {
 }
 
 main().catch((error) => {
+
     console.error(
         "Reminder server error:",
         error
